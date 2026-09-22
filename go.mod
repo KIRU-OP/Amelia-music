@@ -1,4 +1,4 @@
-module KanhaMusic
+module amelia-music
 
 go 1.26.0
 
