@@ -23,15 +23,12 @@ INSTALL_PIP=false
 INSTALL_FFMPEG=false
 INSTALL_YTDLP=false
 INSTALL_NTGCALLS=false
-INSTALL_TDJSON=false
 SKIP_SUMMARY=false
 QUIET_MODE=false
 
-TDJSON_VERSION="v1.8.66"
 NTGCALLS_VERSION="v2.1.0"
-GO_REQUIRED="1.26.0"
-GO_TARGET="1.26.0"
-DENO_VERSION_FALLBACK="v2.9.7"
+GO_REQUIRED="1.25.7"
+GO_TARGET="1.25.7"
 
 OS_TYPE=""
 ARCH_TYPE=""
@@ -89,15 +86,13 @@ ${CYAN}${BOLD}Options:${RESET}
   -f, --ffmpeg            Install FFmpeg only
   -y, --yt-dlp            Install yt-dlp only
   -n, --ntgcalls          Install ntgcalls only
-  -t, --tdjson            Install TDLib (tdjson) only
   -q, --quiet             Quiet mode (minimal output)
   --skip-summary          Skip final summary
- 
+
 ${CYAN}${BOLD}Examples:${RESET}
   $0                      # Install everything
   $0 --deno               # Install only Deno
   $0 --ntgcalls           # Install only ntgcalls (useful for Docker)
-  $0 --tdjson             # Install only TDLib
   $0 --go --ffmpeg        # Install only Go and FFmpeg
   $0 --python --pip       # Install only Python and pip
   $0 --all --quiet        # Install everything in quiet mode
@@ -119,7 +114,6 @@ parse_arguments() {
             -f|--ffmpeg)          INSTALL_FFMPEG=true;   any_component=true ;;
             -y|--yt-dlp|--ytdlp) INSTALL_YTDLP=true;   any_component=true ;;
             -n|--ntgcalls)        INSTALL_NTGCALLS=true; any_component=true ;;
-            -t|--tdjson)          INSTALL_TDJSON=true;   any_component=true ;;
             -q|--quiet)           QUIET_MODE=true ;;
             --skip-summary)       SKIP_SUMMARY=true ;;
             *)
@@ -147,7 +141,6 @@ should_install() {
         ffmpeg)   [[ "$INSTALL_FFMPEG"   == true ]] && return 0 ;;
         ytdlp)    [[ "$INSTALL_YTDLP"   == true ]] && return 0 ;;
         ntgcalls) [[ "$INSTALL_NTGCALLS" == true ]] && return 0 ;;
-        tdjson)   [[ "$INSTALL_TDJSON"   == true || "$INSTALL_NTGCALLS" == true ]] && return 0 ;;
     esac
 
     return 1
@@ -529,29 +522,6 @@ check_install_go() {
     esac
 }
 
-resolve_deno_version() {
-    # The official deno.land installer resolves the latest version via
-    # dl.deno.land, which some networks (Railway, corporate proxies,
-    # restricted Docker hosts, etc.) block or can't reach even though
-    # github.com works fine. Resolve the version from the GitHub API
-    # instead, since that's the same host we already download
-    # ntgcalls/tdjson from successfully.
-    local ver=""
-
-    case "$DOWNLOAD_TOOL" in
-        curl) ver=$(curl -sSL "https://api.github.com/repos/denoland/deno/releases/latest" 2>/dev/null) ;;
-        wget) ver=$(wget -qO- "https://api.github.com/repos/denoland/deno/releases/latest" 2>/dev/null) ;;
-    esac
-
-    ver=$(printf '%s' "$ver" 2>/dev/null | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
-
-    if [[ -n "$ver" && "$ver" == v* ]]; then
-        echo "$ver"
-    else
-        echo "$DENO_VERSION_FALLBACK"
-    fi
-}
-
 check_install_deno() {
     should_install deno || return 0
 
@@ -566,86 +536,32 @@ check_install_deno() {
 
     print_warning "Deno not found, installing..."
 
-    if ! command -v unzip >/dev/null 2>&1; then
-        print_info "unzip not found, installing it (required to unpack Deno)..."
-        install_package "unzip"
-    fi
-
-    if ! command -v unzip >/dev/null 2>&1; then
-        print_soft_error "unzip is required to install Deno"
-        return 1
-    fi
-
-    local target=""
-    case "$OS_TYPE" in
-        linux)
-            [[ "$ARCH_TYPE" == "amd64" ]] && target="x86_64-unknown-linux-gnu" || target="aarch64-unknown-linux-gnu"
-            ;;
-        macos)
-            [[ "$ARCH_TYPE" == "amd64" ]] && target="x86_64-apple-darwin" || target="aarch64-apple-darwin"
-            ;;
-        windows)
-            target="x86_64-pc-windows-msvc"
-            ;;
-    esac
-
-    if [[ -z "$target" ]]; then
-        print_soft_error "Could not determine Deno download target"
-        return 1
-    fi
-
-    local deno_ver
-    deno_ver=$(resolve_deno_version)
-
-    local url="https://github.com/denoland/deno/releases/download/${deno_ver}/deno-${target}.zip"
-    local archive="/tmp/deno_download.zip"
-    local install_dir="$HOME/.deno/bin"
-
-    print_info "Resolved Deno version: $deno_ver"
-    print_info "Downloading: $url"
-
-    local http_code="000"
-    local curl_exit=0
-    if [[ "$DOWNLOAD_TOOL" == "curl" ]]; then
-        http_code=$(curl -sSL -w '%{http_code}' -o "$archive" "$url" 2>>"$INSTALL_LOG")
-        curl_exit=$?
-    else
-        wget -q -O "$archive" "$url" 2>>"$INSTALL_LOG"
-        curl_exit=$?
-        [[ $curl_exit -eq 0 && -s "$archive" ]] && http_code="200"
-    fi
-    log_info "Deno download: tool=$DOWNLOAD_TOOL exit=$curl_exit http_code=$http_code url=$url"
-
-    if [[ $curl_exit -ne 0 || "$http_code" != "200" ]]; then
-        print_soft_error "Deno download failed (exit=$curl_exit, http_code=$http_code) — check connectivity to github.com from this environment"
-        rm -f "$archive"
-        return 1
-    fi
-    print_success "Downloaded Deno archive ($(du -h "$archive" 2>/dev/null | cut -f1))"
-
-    local unzip_err
-    if ! unzip_err=$(unzip -tq "$archive" 2>&1); then
-        print_soft_error "Downloaded Deno archive is not a valid zip (likely truncated/blocked download): $unzip_err"
-        rm -f "$archive"
-        return 1
-    fi
-
-    mkdir -p "$install_dir"
-    if unzip_err=$(unzip -o -q "$archive" -d "$install_dir" 2>&1); then
-        chmod +x "$install_dir/deno" 2>/dev/null
-        chmod +x "$install_dir/deno.exe" 2>/dev/null
-        rm -f "$archive"
-        update_path "$install_dir" "Deno"
-        if [[ -x "$install_dir/deno" || -x "$install_dir/deno.exe" ]]; then
-            print_success "Deno installed ($deno_ver)"
-            return 0
+    if [[ "$OS_TYPE" == "windows" ]]; then
+        if command -v powershell >/dev/null 2>&1; then
+            if run_cmd_arr "Installing Deno for Windows" \
+                powershell -Command "irm https://deno.land/install.ps1 | iex"; then
+                update_path "$HOME/.deno/bin" "Deno"
+                print_success "Deno installed"
+                return 0
+            fi
         fi
-        print_soft_error "Deno archive extracted but no deno binary found in $install_dir"
-        return 1
+    else
+        local deno_install_script="/tmp/deno_install.sh"
+        if download_file "https://deno.land/install.sh" "$deno_install_script"; then
+            chmod +x "$deno_install_script"
+            if run_cmd_arr "Running Deno installer" sh "$deno_install_script"; then
+                rm -f "$deno_install_script"
+                update_path "$HOME/.deno/bin" "Deno"
+                if command -v deno >/dev/null 2>&1 || [[ -x "$HOME/.deno/bin/deno" ]]; then
+                    print_success "Deno installed"
+                    return 0
+                fi
+            fi
+            rm -f "$deno_install_script"
+        fi
     fi
-    rm -f "$archive"
 
-    print_soft_error "Failed to extract Deno archive: $unzip_err"
+    print_soft_error "Deno installation failed"
     return 1
 }
 
@@ -809,77 +725,6 @@ install_ntgcalls() {
     return 1
 }
 
-install_tdjson() {
-    should_install tdjson || return 0
-
-    print_step "Installing TDLib (tdjson)..."
-
-    local arch=""
-    case "$ARCH_TYPE" in
-        amd64) arch="x86_64" ;;
-        arm64) arch="arm64" ;;
-        *)     print_error "Unsupported arch for tdjson: $ARCH_TYPE" "use x86_64 or arm64" ;;
-    esac
-
-    local url=""
-    case "$OS_TYPE" in
-        linux)
-            url="https://github.com/FallenProjects/tdlib-build/releases/download/${TDJSON_VERSION}/TDLib-tdjson-linux-${arch}-shared.tar.gz"
-            ;;
-        macos)
-            url="https://github.com/FallenProjects/tdlib-build/releases/download/${TDJSON_VERSION}/TDLib-tdjson-macos-${arch}-shared.tar.gz"
-            ;;
-        windows)
-            url="https://github.com/FallenProjects/tdlib-build/releases/download/${TDJSON_VERSION}/TDLib-tdjson-windows-${arch}-shared.zip"
-            ;;
-        *)
-            print_error "Unsupported OS for tdjson: $OS_TYPE" "build TDLib manually"
-            ;;
-    esac
-
-    [[ -z "$url" ]] && print_error "Could not determine tdjson URL" "check system compatibility"
-
-    local archive="tdjson_archive.tar.gz"
-    [[ "$OS_TYPE" == "windows" ]] && archive="tdjson_archive.zip"
-
-    if download_file "$url" "$archive"; then
-        mkdir -p tmp_tdjson
-        local extracted=false
-        if [[ "$OS_TYPE" == "windows" ]]; then
-            if run_cmd_arr "Extracting tdjson" unzip -q "$archive" -d tmp_tdjson; then
-                extracted=true
-            fi
-        else
-            if run_cmd_arr "Extracting tdjson" tar -xzf "$archive" -C tmp_tdjson; then
-                extracted=true
-            fi
-        fi
-
-        if [[ "$extracted" == true ]]; then
-            local lib_file
-            lib_file=$(find tmp_tdjson -type f \( -name "libtdjson*" -o -name "tdjson*" \) | head -n1)
-            if [[ -n "$lib_file" ]]; then
-                local base_name
-                base_name=$(basename "$lib_file")
-                mv "$lib_file" "./${base_name}"
-                if [[ "$base_name" != "libtdjson.so.1.8.66" && "$OS_TYPE" == "linux" ]]; then
-                    ln -sf "$base_name" "./libtdjson.so.1.8.66"
-                fi
-                if [[ ! -f "./libtdjson.so" && "$OS_TYPE" == "linux" ]]; then
-                    ln -sf "$base_name" "./libtdjson.so"
-                fi
-                print_success "TDLib ($base_name) installed"
-                rm -rf "$archive" tmp_tdjson
-                return 0
-            fi
-        fi
-        rm -rf "$archive" tmp_tdjson
-    fi
-
-    print_soft_error "TDLib installation failed"
-    return 1
-}
-
 cleanup_temp_files() {
     print_step "Cleaning up temporary files..."
     rm -f /tmp/go*.tar.gz /tmp/go*.zip /tmp/ffmpeg.zip /tmp/yt-dlp /tmp/get-pip.py 2>/dev/null
@@ -953,18 +798,6 @@ print_summary() {
     fi
     printf "%-12s | ${color}%-12s${RESET} | %-15s\n" "$comp" "$status" "$ver"
 
-    comp="TDLib"
-    if should_install tdjson; then
-        if [[ -f "./libtdjson.so.1.8.66" || -f "./libtdjson.so" || -f "./libtdjson.dylib" || -f "./tdjson.dll" ]]; then
-            status="Installed"; ver="$TDJSON_VERSION"; color=$GREEN
-        else
-            status="Failed"; ver="-"; color=$RED
-        fi
-    else
-        status="Skipped"; ver="-"; color=$YELLOW
-    fi
-    printf "%-12s | ${color}%-12s${RESET} | %-15s\n" "$comp" "$status" "$ver"
-
     echo -e "--------------------------------------------------"
     echo -e "\n${CYAN}Detailed log: $INSTALL_LOG${RESET}"
 }
@@ -987,7 +820,6 @@ main() {
     check_install_ffmpeg
     check_install_ytdlp
     install_ntgcalls
-    install_tdjson
 
     cleanup_temp_files
     reload_shell_if_needed
