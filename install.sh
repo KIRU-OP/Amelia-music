@@ -601,22 +601,51 @@ check_install_deno() {
     local archive="/tmp/deno_download.zip"
     local install_dir="$HOME/.deno/bin"
 
-    if download_file "$url" "$archive"; then
-        mkdir -p "$install_dir"
-        if run_cmd_arr "Extracting Deno" unzip -o -q "$archive" -d "$install_dir"; then
-            chmod +x "$install_dir/deno" 2>/dev/null
-            chmod +x "$install_dir/deno.exe" 2>/dev/null
-            rm -f "$archive"
-            update_path "$install_dir" "Deno"
-            if [[ -x "$install_dir/deno" || -x "$install_dir/deno.exe" ]]; then
-                print_success "Deno installed ($deno_ver)"
-                return 0
-            fi
-        fi
+    print_info "Resolved Deno version: $deno_ver"
+    print_info "Downloading: $url"
+
+    local http_code="000"
+    local curl_exit=0
+    if [[ "$DOWNLOAD_TOOL" == "curl" ]]; then
+        http_code=$(curl -sSL -w '%{http_code}' -o "$archive" "$url" 2>>"$INSTALL_LOG")
+        curl_exit=$?
+    else
+        wget -q -O "$archive" "$url" 2>>"$INSTALL_LOG"
+        curl_exit=$?
+        [[ $curl_exit -eq 0 && -s "$archive" ]] && http_code="200"
+    fi
+    log_info "Deno download: tool=$DOWNLOAD_TOOL exit=$curl_exit http_code=$http_code url=$url"
+
+    if [[ $curl_exit -ne 0 || "$http_code" != "200" ]]; then
+        print_soft_error "Deno download failed (exit=$curl_exit, http_code=$http_code) — check connectivity to github.com from this environment"
         rm -f "$archive"
+        return 1
+    fi
+    print_success "Downloaded Deno archive ($(du -h "$archive" 2>/dev/null | cut -f1))"
+
+    local unzip_err
+    if ! unzip_err=$(unzip -tq "$archive" 2>&1); then
+        print_soft_error "Downloaded Deno archive is not a valid zip (likely truncated/blocked download): $unzip_err"
+        rm -f "$archive"
+        return 1
     fi
 
-    print_soft_error "Deno installation failed"
+    mkdir -p "$install_dir"
+    if unzip_err=$(unzip -o -q "$archive" -d "$install_dir" 2>&1); then
+        chmod +x "$install_dir/deno" 2>/dev/null
+        chmod +x "$install_dir/deno.exe" 2>/dev/null
+        rm -f "$archive"
+        update_path "$install_dir" "Deno"
+        if [[ -x "$install_dir/deno" || -x "$install_dir/deno.exe" ]]; then
+            print_success "Deno installed ($deno_ver)"
+            return 0
+        fi
+        print_soft_error "Deno archive extracted but no deno binary found in $install_dir"
+        return 1
+    fi
+    rm -f "$archive"
+
+    print_soft_error "Failed to extract Deno archive: $unzip_err"
     return 1
 }
 
