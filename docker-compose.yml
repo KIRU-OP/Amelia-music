@@ -1,0 +1,9 @@
+services:
+  Ameliamusic:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: Ameliamusic
+    env_file:
+      - .env
+    restart: unless-stopped
