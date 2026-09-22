@@ -543,7 +543,7 @@ resolve_deno_version() {
         wget) ver=$(wget -qO- "https://api.github.com/repos/denoland/deno/releases/latest" 2>/dev/null) ;;
     esac
 
-    ver=$(printf '%s' "$ver" | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
+    ver=$(printf '%s' "$ver" 2>/dev/null | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
 
     if [[ -n "$ver" && "$ver" == v* ]]; then
         echo "$ver"
