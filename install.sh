@@ -31,6 +31,7 @@ TDJSON_VERSION="v1.8.66"
 NTGCALLS_VERSION="v2.1.0"
 GO_REQUIRED="1.26.0"
 GO_TARGET="1.26.0"
+DENO_VERSION_FALLBACK="v2.9.7"
 
 OS_TYPE=""
 ARCH_TYPE=""
@@ -528,6 +529,29 @@ check_install_go() {
     esac
 }
 
+resolve_deno_version() {
+    # The official deno.land installer resolves the latest version via
+    # dl.deno.land, which some networks (Railway, corporate proxies,
+    # restricted Docker hosts, etc.) block or can't reach even though
+    # github.com works fine. Resolve the version from the GitHub API
+    # instead, since that's the same host we already download
+    # ntgcalls/tdjson from successfully.
+    local ver=""
+
+    case "$DOWNLOAD_TOOL" in
+        curl) ver=$(curl -sSL "https://api.github.com/repos/denoland/deno/releases/latest" 2>/dev/null) ;;
+        wget) ver=$(wget -qO- "https://api.github.com/repos/denoland/deno/releases/latest" 2>/dev/null) ;;
+    esac
+
+    ver=$(printf '%s' "$ver" | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
+
+    if [[ -n "$ver" && "$ver" == v* ]]; then
+        echo "$ver"
+    else
+        echo "$DENO_VERSION_FALLBACK"
+    fi
+}
+
 check_install_deno() {
     should_install deno || return 0
 
@@ -542,29 +566,54 @@ check_install_deno() {
 
     print_warning "Deno not found, installing..."
 
-    if [[ "$OS_TYPE" == "windows" ]]; then
-        if command -v powershell >/dev/null 2>&1; then
-            if run_cmd_arr "Installing Deno for Windows" \
-                powershell -Command "irm https://deno.land/install.ps1 | iex"; then
-                update_path "$HOME/.deno/bin" "Deno"
-                print_success "Deno installed"
+    if ! command -v unzip >/dev/null 2>&1; then
+        print_info "unzip not found, installing it (required to unpack Deno)..."
+        install_package "unzip"
+    fi
+
+    if ! command -v unzip >/dev/null 2>&1; then
+        print_soft_error "unzip is required to install Deno"
+        return 1
+    fi
+
+    local target=""
+    case "$OS_TYPE" in
+        linux)
+            [[ "$ARCH_TYPE" == "amd64" ]] && target="x86_64-unknown-linux-gnu" || target="aarch64-unknown-linux-gnu"
+            ;;
+        macos)
+            [[ "$ARCH_TYPE" == "amd64" ]] && target="x86_64-apple-darwin" || target="aarch64-apple-darwin"
+            ;;
+        windows)
+            target="x86_64-pc-windows-msvc"
+            ;;
+    esac
+
+    if [[ -z "$target" ]]; then
+        print_soft_error "Could not determine Deno download target"
+        return 1
+    fi
+
+    local deno_ver
+    deno_ver=$(resolve_deno_version)
+
+    local url="https://github.com/denoland/deno/releases/download/${deno_ver}/deno-${target}.zip"
+    local archive="/tmp/deno_download.zip"
+    local install_dir="$HOME/.deno/bin"
+
+    if download_file "$url" "$archive"; then
+        mkdir -p "$install_dir"
+        if run_cmd_arr "Extracting Deno" unzip -o -q "$archive" -d "$install_dir"; then
+            chmod +x "$install_dir/deno" 2>/dev/null
+            chmod +x "$install_dir/deno.exe" 2>/dev/null
+            rm -f "$archive"
+            update_path "$install_dir" "Deno"
+            if [[ -x "$install_dir/deno" || -x "$install_dir/deno.exe" ]]; then
+                print_success "Deno installed ($deno_ver)"
                 return 0
             fi
         fi
-    else
-        local deno_install_script="/tmp/deno_install.sh"
-        if download_file "https://deno.land/install.sh" "$deno_install_script"; then
-            chmod +x "$deno_install_script"
-            if run_cmd_arr "Running Deno installer" sh "$deno_install_script"; then
-                rm -f "$deno_install_script"
-                update_path "$HOME/.deno/bin" "Deno"
-                if command -v deno >/dev/null 2>&1 || [[ -x "$HOME/.deno/bin/deno" ]]; then
-                    print_success "Deno installed"
-                    return 0
-                fi
-            fi
-            rm -f "$deno_install_script"
-        fi
+        rm -f "$archive"
     fi
 
     print_soft_error "Deno installation failed"
